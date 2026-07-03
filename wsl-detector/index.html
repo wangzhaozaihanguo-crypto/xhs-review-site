@@ -1,0 +1,446 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>脱矿白斑智能识别原型</title>
+  <style>
+    :root {
+      --ink: #17202a;
+      --muted: #667085;
+      --line: #d8dee8;
+      --blue: #2563eb;
+      --bg: #f6f7f9;
+      --panel: #ffffff;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: "Segoe UI", "Microsoft YaHei", Arial, sans-serif;
+      color: var(--ink);
+      background: var(--bg);
+    }
+    header {
+      border-bottom: 1px solid var(--line);
+      background: #fff;
+      padding: 18px 28px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+    }
+    h1 { font-size: 22px; margin: 0; letter-spacing: 0; }
+    .meta { color: var(--muted); font-size: 13px; line-height: 1.5; }
+    main {
+      max-width: 1180px;
+      margin: 0 auto;
+      padding: 24px;
+      display: grid;
+      grid-template-columns: 360px 1fr;
+      gap: 20px;
+    }
+    .panel {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 18px;
+    }
+    .upload {
+      border: 1px dashed #98a2b3;
+      border-radius: 8px;
+      padding: 20px;
+      background: #fbfcfe;
+    }
+    input[type=file] { width: 100%; }
+    button {
+      margin-top: 16px;
+      width: 100%;
+      border: 0;
+      border-radius: 6px;
+      background: var(--blue);
+      color: white;
+      padding: 11px 14px;
+      font-size: 15px;
+      cursor: pointer;
+    }
+    button:hover { background: #1d4ed8; }
+    button:disabled { background: #98a2b3; cursor: wait; }
+    .note {
+      margin-top: 16px;
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1.55;
+    }
+    .metrics {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(120px, 1fr));
+      gap: 12px;
+      margin-bottom: 16px;
+    }
+    .metric {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 14px;
+      background: #fff;
+    }
+    .metric b { display: block; font-size: 24px; margin-top: 6px; }
+    .metric span { color: var(--muted); font-size: 12px; }
+    .image-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 14px;
+    }
+    .image-box {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      overflow: hidden;
+      background: #fff;
+    }
+    .image-box canvas, .image-box img {
+      width: 100%;
+      display: block;
+      max-height: 520px;
+      object-fit: contain;
+      background: #f8fafc;
+    }
+    .caption {
+      padding: 9px 12px;
+      color: var(--muted);
+      font-size: 13px;
+      border-top: 1px solid var(--line);
+    }
+    .refs {
+      display: grid;
+      grid-template-columns: repeat(5, 1fr);
+      gap: 10px;
+      margin-top: 14px;
+    }
+    .ref {
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      overflow: hidden;
+      background: #fff;
+    }
+    .ref img {
+      display: block;
+      width: 100%;
+      height: 100px;
+      object-fit: cover;
+    }
+    .ref div { padding: 6px; font-size: 11px; color: var(--muted); }
+    .empty {
+      min-height: 520px;
+      display: grid;
+      place-items: center;
+      color: var(--muted);
+      text-align: center;
+      border: 1px dashed var(--line);
+      border-radius: 8px;
+      background: #fff;
+      padding: 24px;
+    }
+    @media (max-width: 900px) {
+      main { grid-template-columns: 1fr; }
+      .metrics { grid-template-columns: 1fr 1fr; }
+      .image-grid { grid-template-columns: 1fr; }
+      .refs { grid-template-columns: repeat(2, 1fr); }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>脱矿白斑智能识别原型</h1>
+    <div class="meta">静态部署版 · 浏览器本地分析 · 非医疗诊断</div>
+  </header>
+  <main>
+    <section class="panel">
+      <div class="upload">
+        <label for="image"><b>上传牙齿照片</b></label>
+        <p class="meta">建议使用清晰、正面、光照均匀的口内照。图片在浏览器本地分析，不上传到服务器。</p>
+        <input id="image" name="image" type="file" accept="image/*">
+        <button id="analyzeBtn" type="button">开始识别</button>
+      </div>
+      <div class="note" id="modelNote">模型加载中...</div>
+    </section>
+    <section id="result">
+      <div class="empty">
+        <div>
+          <b>还没有分析结果</b><br>
+          上传一张牙齿照片后，这里会显示疑似脱矿白斑热区、风险分数和相似参考图。
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <script>
+    let model = null;
+
+    const clamp = (x, a, b) => Math.max(a, Math.min(b, x));
+    const mean = arr => arr.reduce((a, b) => a + b, 0) / Math.max(1, arr.length);
+    const std = arr => {
+      const m = mean(arr);
+      return Math.sqrt(mean(arr.map(v => (v - m) * (v - m))));
+    };
+
+    async function loadModel() {
+      model = await fetch('model.json', { cache: 'no-store' }).then(r => r.json());
+      document.getElementById('modelNote').textContent =
+        `当前模型由公开网页采集的 ${model.training_count} 张牙齿脱矿/白斑相关图片初步训练。输出为筛查和研究原型结果，不能作为诊断依据。`;
+    }
+
+    function imageToCanvas(img, maxSize = 768) {
+      const scale = Math.min(1, maxSize / Math.max(img.naturalWidth, img.naturalHeight));
+      const canvas = document.createElement('canvas');
+      canvas.width = Math.max(1, Math.round(img.naturalWidth * scale));
+      canvas.height = Math.max(1, Math.round(img.naturalHeight * scale));
+      canvas.getContext('2d').drawImage(img, 0, 0, canvas.width, canvas.height);
+      return canvas;
+    }
+
+    function getArrays(canvas) {
+      const ctx = canvas.getContext('2d');
+      const data = ctx.getImageData(0, 0, canvas.width, canvas.height).data;
+      const n = canvas.width * canvas.height;
+      const val = new Float32Array(n);
+      const sat = new Float32Array(n);
+      const gray = new Float32Array(n);
+      const redGum = new Uint8Array(n);
+      for (let i = 0, j = 0; i < n; i++, j += 4) {
+        const r = data[j], g = data[j + 1], b = data[j + 2];
+        const mx = Math.max(r, g, b) / 255;
+        const mn = Math.min(r, g, b) / 255;
+        val[i] = mx;
+        sat[i] = mx === 0 ? 0 : (mx - mn) / mx;
+        gray[i] = (r + g + b) / (3 * 255);
+        redGum[i] = (r > 120 && r > g * 1.15 && r > b * 1.2) ? 1 : 0;
+      }
+      return { data, val, sat, gray, redGum, width: canvas.width, height: canvas.height };
+    }
+
+    function blurGray(gray, width, height, radius = 7) {
+      const tmp = new Float32Array(gray.length);
+      const out = new Float32Array(gray.length);
+      for (let y = 0; y < height; y++) {
+        for (let x = 0; x < width; x++) {
+          let s = 0, c = 0;
+          for (let dx = -radius; dx <= radius; dx++) {
+            const xx = x + dx;
+            if (xx >= 0 && xx < width) { s += gray[y * width + xx]; c++; }
+          }
+          tmp[y * width + x] = s / c;
+        }
+      }
+      for (let y = 0; y < height; y++) {
+        for (let x = 0; x < width; x++) {
+          let s = 0, c = 0;
+          for (let dy = -radius; dy <= radius; dy++) {
+            const yy = y + dy;
+            if (yy >= 0 && yy < height) { s += tmp[yy * width + x]; c++; }
+          }
+          out[y * width + x] = s / c;
+        }
+      }
+      return out;
+    }
+
+    function lesionMap(canvas) {
+      const a = getArrays(canvas);
+      const blur = blurGray(a.gray, a.width, a.height, 7);
+      const lm = new Float32Array(a.gray.length);
+      const mask = new Uint8Array(a.gray.length);
+      for (let i = 0; i < lm.length; i++) {
+        const tooth = a.val[i] > 0.45 && a.sat[i] < 0.42 && !a.redGum[i];
+        mask[i] = tooth ? 1 : 0;
+        const localContrast = clamp(a.gray[i] - blur[i] + 0.15, 0, 1);
+        const whiteness = clamp((a.val[i] - 0.62) / 0.35, 0, 1) * clamp((0.38 - a.sat[i]) / 0.38, 0, 1);
+        lm[i] = tooth ? clamp(whiteness * (0.65 + 0.35 * localContrast), 0, 1) : 0;
+      }
+      return { lm, mask, ...a };
+    }
+
+    function gradient(gray, width, height) {
+      const out = new Float32Array(gray.length);
+      for (let y = 1; y < height - 1; y++) {
+        for (let x = 1; x < width - 1; x++) {
+          const i = y * width + x;
+          const gx = Math.abs(gray[i + 1] - gray[i - 1]);
+          const gy = Math.abs(gray[i + width] - gray[i - width]);
+          out[i] = Math.sqrt(gx * gx + gy * gy);
+        }
+      }
+      return out;
+    }
+
+    function histogram(values, bins = 8) {
+      const h = Array(bins).fill(0);
+      for (const v of values) h[Math.min(bins - 1, Math.floor(v * bins))]++;
+      const total = Math.max(1, values.length);
+      return h.map(x => x / total * bins);
+    }
+
+    function quantiles(values, qs) {
+      const v = [...values].sort((a, b) => a - b);
+      if (!v.length) return qs.map(() => 0);
+      return qs.map(q => v[Math.min(v.length - 1, Math.floor(q * (v.length - 1)))]);
+    }
+
+    function featureVector(canvas) {
+      const small = document.createElement('canvas');
+      const scale = Math.min(1, 384 / Math.max(canvas.width, canvas.height));
+      small.width = Math.max(1, Math.round(canvas.width * scale));
+      small.height = Math.max(1, Math.round(canvas.height * scale));
+      small.getContext('2d').drawImage(canvas, 0, 0, small.width, small.height);
+      const a = lesionMap(small);
+      const grad = gradient(a.gray, a.width, a.height);
+      const vals = [], sats = [], grads = [], lesions = [], rs = [], gs = [], bs = [];
+      let maskCount = 0;
+      for (let i = 0, j = 0; i < a.mask.length; i++, j += 4) if (a.mask[i]) maskCount++;
+      const useAll = maskCount < 50;
+      for (let i = 0, j = 0; i < a.mask.length; i++, j += 4) {
+        if (!useAll && !a.mask[i]) continue;
+        vals.push(a.val[i]);
+        sats.push(a.sat[i]);
+        grads.push(grad[i]);
+        lesions.push(a.lm[i]);
+        rs.push(a.data[j] / 255);
+        gs.push(a.data[j + 1] / 255);
+        bs.push(a.data[j + 2] / 255);
+      }
+      const q = quantiles(vals, [0.1, 0.25, 0.5, 0.75, 0.9]);
+      const strong45 = lesions.filter(v => v > 0.45).length / Math.max(1, lesions.length);
+      const strong65 = lesions.filter(v => v > 0.65).length / Math.max(1, lesions.length);
+      return [
+        mean(vals), std(vals),
+        mean(sats), std(sats),
+        mean(grads), std(grads),
+        strong45, strong65,
+        mean(lesions), Math.max(...lesions),
+        maskCount / Math.max(1, a.mask.length),
+        ...q,
+        ...histogram(rs), ...histogram(gs), ...histogram(bs)
+      ].map(v => Number.isFinite(v) ? v : 0);
+    }
+
+    function drawHeatmap(sourceCanvas, targetCanvas) {
+      targetCanvas.width = sourceCanvas.width;
+      targetCanvas.height = sourceCanvas.height;
+      const ctx = targetCanvas.getContext('2d');
+      ctx.drawImage(sourceCanvas, 0, 0);
+      const img = ctx.getImageData(0, 0, targetCanvas.width, targetCanvas.height);
+      const a = lesionMap(sourceCanvas);
+      let minX = targetCanvas.width, minY = targetCanvas.height, maxX = 0, maxY = 0, hits = 0;
+      for (let i = 0, j = 0; i < a.lm.length; i++, j += 4) {
+        const s = Math.round(a.lm[i] * 255);
+        if (s > 70) {
+          const alpha = Math.min(0.67, s / 340);
+          img.data[j] = Math.round(img.data[j] * (1 - alpha) + 255 * alpha);
+          img.data[j + 1] = Math.round(img.data[j + 1] * (1 - alpha) + (180 - s / 2) * alpha);
+          img.data[j + 2] = Math.round(img.data[j + 2] * (1 - alpha));
+        }
+        if (a.lm[i] > 0.68) {
+          const x = i % targetCanvas.width;
+          const y = Math.floor(i / targetCanvas.width);
+          minX = Math.min(minX, x); maxX = Math.max(maxX, x);
+          minY = Math.min(minY, y); maxY = Math.max(maxY, y);
+          hits++;
+        }
+      }
+      ctx.putImageData(img, 0, 0);
+      if (hits > 20) {
+        ctx.strokeStyle = 'rgba(255,60,60,0.95)';
+        ctx.lineWidth = 3;
+        ctx.strokeRect(minX, minY, maxX - minX, maxY - minY);
+      }
+      return a;
+    }
+
+    function analyze(canvas) {
+      const vec = featureVector(canvas);
+      const z = vec.map((v, i) => (v - model.feature_mean[i]) / model.feature_std[i]);
+      const scored = model.prototypes.map((p, idx) => {
+        let s = 0;
+        for (let i = 0; i < z.length; i++) {
+          const d = p[i] - z[i];
+          s += d * d;
+        }
+        return { idx, dist: Math.sqrt(s / z.length) };
+      }).sort((a, b) => a.dist - b.dist);
+      const similarity = Math.exp(-scored[0].dist / 2.2);
+      const a = lesionMap(canvas);
+      const region = [];
+      for (let i = 0; i < a.lm.length; i++) if (a.mask[i]) region.push(a.lm[i]);
+      const r = region.length ? region : [...a.lm];
+      const lesionArea = r.filter(v => v > 0.48).length / Math.max(1, r.length);
+      const lesionStrong = r.filter(v => v > 0.68).length / Math.max(1, r.length);
+      const lesionMean = mean(r);
+      const lesionScore = Math.min(1, lesionArea * 2.8 + lesionStrong * 4.5 + lesionMean * 0.65);
+      const finalScore = Math.min(1, 0.58 * lesionScore + 0.42 * similarity);
+      const level = finalScore >= 0.72 ? '高疑似' : finalScore >= 0.48 ? '中等疑似' : finalScore >= 0.30 ? '低到中等' : '低疑似';
+      return { finalScore, level, similarity, lesionScore, lesionArea, nearest: scored.slice(0, 5) };
+    }
+
+    function renderResult(canvas, heatCanvas, result) {
+      const refs = result.nearest.map(x => {
+        const ref = model.refs[x.idx];
+        return `<div class="ref"><img src="static/refs/${ref.name}"><div>相似距离 ${x.dist.toFixed(2)}</div></div>`;
+      }).join('');
+      document.getElementById('result').innerHTML = `
+        <div class="metrics">
+          <div class="metric"><span>综合疑似度</span><b>${(result.finalScore * 100).toFixed(1)}%</b></div>
+          <div class="metric"><span>判断级别</span><b>${result.level}</b></div>
+          <div class="metric"><span>白斑热区</span><b>${(result.lesionScore * 100).toFixed(1)}%</b></div>
+          <div class="metric"><span>原型相似</span><b>${(result.similarity * 100).toFixed(1)}%</b></div>
+        </div>
+        <div class="image-grid">
+          <div class="image-box"><div id="origSlot"></div><div class="caption">原图预览</div></div>
+          <div class="image-box"><div id="heatSlot"></div><div class="caption">疑似白斑热区：红色越明显，代表越符合“高亮、低饱和、局部白斑”特征</div></div>
+        </div>
+        <div class="panel" style="margin-top:14px">
+          <b>最相似训练参考图</b>
+          <div class="refs">${refs}</div>
+          <div class="note">疑似白斑面积占牙面候选区域约 ${(result.lesionArea * 100).toFixed(2)}%。请结合人工复核。</div>
+        </div>`;
+      document.getElementById('origSlot').appendChild(canvas);
+      document.getElementById('heatSlot').appendChild(heatCanvas);
+    }
+
+    async function readFileAsImage(file) {
+      const url = URL.createObjectURL(file);
+      const img = new Image();
+      img.src = url;
+      await img.decode();
+      URL.revokeObjectURL(url);
+      return img;
+    }
+
+    async function runAnalyze() {
+      const file = document.getElementById('image').files[0];
+      if (!file) {
+        alert('请先选择一张图片');
+        return;
+      }
+      const btn = document.getElementById('analyzeBtn');
+      btn.disabled = true;
+      btn.textContent = '识别中...';
+      try {
+        const img = await readFileAsImage(file);
+        const canvas = imageToCanvas(img, 900);
+        const heatCanvas = document.createElement('canvas');
+        drawHeatmap(canvas, heatCanvas);
+        const result = analyze(canvas);
+        renderResult(canvas, heatCanvas, result);
+      } catch (err) {
+        document.getElementById('result').innerHTML = `<div class="empty"><b>分析失败</b><br>${String(err)}</div>`;
+      } finally {
+        btn.disabled = false;
+        btn.textContent = '开始识别';
+      }
+    }
+
+    document.getElementById('analyzeBtn').addEventListener('click', runAnalyze);
+    loadModel().catch(err => {
+      document.getElementById('modelNote').textContent = '模型加载失败：' + String(err);
+    });
+  </script>
+</body>
+</html>
