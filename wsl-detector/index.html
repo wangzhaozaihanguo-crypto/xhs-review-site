@@ -184,8 +184,10 @@
 
     async function loadModel() {
       model = await fetch('model.json', { cache: 'no-store' }).then(r => r.json());
+      const wslCount = model.classes?.wsl?.training_count || model.training_count || 0;
+      const flCount = model.classes?.fluorosis?.training_count || model.differential_training_count || 0;
       document.getElementById('modelNote').textContent =
-        `当前模型由公开网页采集的 ${model.training_count} 张牙齿脱矿/白斑相关图片初步训练。输出为筛查和研究原型结果，不能作为诊断依据。`;
+        `当前模型由 ${wslCount} 张脱矿白斑图片和 ${flCount} 张氟斑牙图片初步训练。输出为筛查和研究原型结果，不能作为诊断依据。`;
     }
 
     function imageToCanvas(img, maxSize = 768) {
@@ -357,7 +359,7 @@
     function analyze(canvas) {
       const vec = featureVector(canvas);
       const z = vec.map((v, i) => (v - model.feature_mean[i]) / model.feature_std[i]);
-      const scored = model.prototypes.map((p, idx) => {
+      const classScored = (className) => model.classes[className].prototypes.map((p, idx) => {
         let s = 0;
         for (let i = 0; i < z.length; i++) {
           const d = p[i] - z[i];
@@ -365,7 +367,10 @@
         }
         return { idx, dist: Math.sqrt(s / z.length) };
       }).sort((a, b) => a.dist - b.dist);
-      const similarity = Math.exp(-scored[0].dist / 2.2);
+      const wslScored = classScored('wsl');
+      const fluorosisScored = classScored('fluorosis');
+      const similarity = Math.exp(-wslScored[0].dist / 2.2);
+      const fluorosisSimilarity = Math.exp(-fluorosisScored[0].dist / 2.2);
       const a = lesionMap(canvas);
       const region = [];
       for (let i = 0; i < a.lm.length; i++) if (a.mask[i]) region.push(a.lm[i]);
@@ -376,28 +381,63 @@
       const lesionScore = Math.min(1, lesionArea * 2.8 + lesionStrong * 4.5 + lesionMean * 0.65);
       const finalScore = Math.min(1, 0.58 * lesionScore + 0.42 * similarity);
       const level = finalScore >= 0.72 ? '高疑似' : finalScore >= 0.48 ? '中等疑似' : finalScore >= 0.30 ? '低到中等' : '低疑似';
-      return { finalScore, level, similarity, lesionScore, lesionArea, nearest: scored.slice(0, 5) };
+      const differentialMargin = similarity - fluorosisSimilarity;
+      const differential = differentialMargin > 0.08
+        ? '更接近脱矿白斑'
+        : differentialMargin < -0.08
+          ? '更接近氟斑牙'
+          : '两者相近，需人工鉴别';
+      return {
+        finalScore,
+        level,
+        similarity,
+        fluorosisSimilarity,
+        differential,
+        differentialMargin,
+        lesionScore,
+        lesionArea,
+        nearestWsl: wslScored.slice(0, 5),
+        nearestFluorosis: fluorosisScored.slice(0, 5)
+      };
     }
 
     function renderResult(canvas, heatCanvas, result) {
-      const refs = result.nearest.map(x => {
-        const ref = model.refs[x.idx];
-        return `<div class="ref"><img src="static/refs/${ref.name}"><div>相似距离 ${x.dist.toFixed(2)}</div></div>`;
+      const wslRefs = result.nearestWsl.map(x => {
+        const ref = model.classes.wsl.refs[x.idx];
+        return `<div class="ref"><img src="${model.classes.wsl.ref_base}/${ref.name}"><div>WSL 距离 ${x.dist.toFixed(2)}</div></div>`;
+      }).join('');
+      const fluorosisRefs = result.nearestFluorosis.map(x => {
+        const ref = model.classes.fluorosis.refs[x.idx];
+        return `<div class="ref"><img src="${model.classes.fluorosis.ref_base}/${ref.name}"><div>氟斑牙距离 ${x.dist.toFixed(2)}</div></div>`;
       }).join('');
       document.getElementById('result').innerHTML = `
         <div class="metrics">
           <div class="metric"><span>综合疑似度</span><b>${(result.finalScore * 100).toFixed(1)}%</b></div>
+          <div class="metric"><span>鉴别倾向</span><b>${result.differential}</b></div>
+          <div class="metric"><span>WSL 相似</span><b>${(result.similarity * 100).toFixed(1)}%</b></div>
+          <div class="metric"><span>氟斑牙相似</span><b>${(result.fluorosisSimilarity * 100).toFixed(1)}%</b></div>
+        </div>
+        <div class="metrics">
           <div class="metric"><span>判断级别</span><b>${result.level}</b></div>
           <div class="metric"><span>白斑热区</span><b>${(result.lesionScore * 100).toFixed(1)}%</b></div>
-          <div class="metric"><span>原型相似</span><b>${(result.similarity * 100).toFixed(1)}%</b></div>
+          <div class="metric"><span>鉴别差值</span><b>${(result.differentialMargin * 100).toFixed(1)}</b></div>
+          <div class="metric"><span>疑似面积</span><b>${(result.lesionArea * 100).toFixed(1)}%</b></div>
         </div>
         <div class="image-grid">
           <div class="image-box"><div id="origSlot"></div><div class="caption">原图预览</div></div>
           <div class="image-box"><div id="heatSlot"></div><div class="caption">疑似白斑热区：红色越明显，代表越符合“高亮、低饱和、局部白斑”特征</div></div>
         </div>
         <div class="panel" style="margin-top:14px">
-          <b>最相似训练参考图</b>
-          <div class="refs">${refs}</div>
+          <b>最相似脱矿白斑参考图</b>
+          <div class="refs">${wslRefs}</div>
+          <div class="note">脱矿白斑通常更偏局部边界较清楚的白垩样斑，正畸后可围绕托槽区域分布。</div>
+        </div>
+        <div class="panel" style="margin-top:14px">
+          <b>最相似氟斑牙参考图</b>
+          <div class="refs">${fluorosisRefs}</div>
+          <div class="note">氟斑牙常见对称性、弥散性白垩样/褐色斑或条纹样改变，需结合病史和牙位分布鉴别。</div>
+        </div>
+        <div class="panel" style="margin-top:14px">
           <div class="note">疑似白斑面积占牙面候选区域约 ${(result.lesionArea * 100).toFixed(2)}%。请结合人工复核。</div>
         </div>`;
       document.getElementById('origSlot').appendChild(canvas);
